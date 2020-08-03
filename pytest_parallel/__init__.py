@@ -103,6 +103,45 @@ def pytest_configure(config):
     if not config.option.collectonly and (workers or tests_per_worker):
         config.pluginmanager.register(ParallelRunner(config), 'parallelrunner')
 
+from _pytest.fixtures import scopes, scopename2class, scope2props
+import _pytest.main
+scopes.insert(0, "process")
+scopename2class["process"] = _pytest.main.Session
+scope2props["process"] = ()
+
+fixture_results = {}
+fixture_locks = {}
+
+import inspect
+from decorator import decorator
+
+def process_fixture(original_fixture, *decorator_args, **decorator_kwargs):
+    def new_decorator(fun):
+        if inspect.isgeneratorfunction(fun):
+            pytest.fail('process scope fixture must not be a generator')
+
+        @decorator
+        def wrapped(fun, *args, **kwargs):
+            fixture_name = fun.__name__
+            lock = fixture_locks.setdefault(fixture_name, threading.RLock())
+            with lock:
+                if fixture_name not in fixture_results:
+                    fixture_results[fixture_name] = fun(*args, **kwargs)
+                return fixture_results[fixture_name]
+
+        return original_fixture(*decorator_args, **decorator_kwargs)(wrapped(fun))
+    return new_decorator
+
+
+def fixture(original_fixture):
+    def new_fixture(*args, **kwargs):
+        if kwargs.get('scope') == 'process':
+            return process_fixture(original_fixture, *args, **kwargs)
+        else:
+            return original_fixture(*args, **kwargs)
+    return new_fixture
+
+pytest.fixture = fixture(pytest.fixture)
 
 class ThreadLocalEnviron(os._Environ):
     def __init__(self, env):
